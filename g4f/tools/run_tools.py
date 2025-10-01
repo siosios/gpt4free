@@ -5,13 +5,14 @@ import re
 import json
 import asyncio
 import time
+import datetime
 from pathlib import Path
-from typing import Optional, Callable, AsyncIterator, Iterator, Dict, Any, Tuple, List, Union
+from typing import Optional, AsyncIterator, Iterator, Dict, Any, Tuple, List, Union
 
 from ..typing import Messages
 from ..providers.helper import filter_none
 from ..providers.asyncio import to_async_iterator
-from ..providers.response import Reasoning, FinishReason, Sources
+from ..providers.response import Reasoning, FinishReason, Sources, Usage, ProviderInfo
 from ..providers.types import ProviderType
 from ..cookies import get_cookies_dir
 from .web_search import do_search, get_search_message
@@ -109,6 +110,7 @@ class ToolHandler:
 
             function_name = tool.get("function", {}).get("name")
 
+            debug.log(f"Processing tool call: {function_name}")
             if function_name == TOOL_NAMES["SEARCH"]:
                 messages, sources = await ToolHandler.process_search_tool(messages, tool)
 
@@ -127,6 +129,7 @@ class AuthManager:
         "GeminiPro": "Gemini",
         "PollinationsAI": "Pollinations",
         "OpenaiAPI": "Openai",
+        "PuterJS": "Puter",
     }
 
     @classmethod
@@ -141,7 +144,7 @@ class AuthManager:
             env_var = f"{cls.aliases[provider_name].upper()}_API_KEY"
             api_key = os.environ.get(env_var)
         if api_key:
-            debug.log(f"Loading API key from environment variable {env_var}")
+            debug.log(f"Loading API key for {provider_name} from environment variable {env_var}")
             return api_key
         return None
 
@@ -216,8 +219,8 @@ async def perform_web_search(messages: Messages, web_search_param: Any) -> Tuple
         search_query = web_search_param if isinstance(web_search_param, str) and web_search_param != "true" else None
         messages[-1]["content"], sources = await do_search(messages[-1]["content"], search_query)
     except Exception as e:
-        debug.error(f"Couldn't do web search: {e.__class__.__name__}: {e}")
-        
+        debug.error(f"Couldn't do web search:", e)
+
     return messages, sources
 
 
@@ -233,6 +236,7 @@ async def async_iter_run_tools(
     sources = None
     web_search = kwargs.get('web_search')
     if web_search:
+        debug.log(f"Performing web search with value: {web_search}")
         messages, sources = await perform_web_search(messages, web_search)
 
     # Get API key
@@ -249,9 +253,24 @@ async def async_iter_run_tools(
     # Generate response
     response = to_async_iterator(provider.async_create_function(model=model, messages=messages, **kwargs))
     
-    async for chunk in response:
-        yield chunk
-        
+    try:
+        model_info = model
+        async for chunk in response:
+            if isinstance(chunk, ProviderInfo):
+                model_info = getattr(chunk, 'model', model_info)
+            elif isinstance(chunk, Usage):
+                usage = {"user": kwargs.get("user"), "model": model_info, "provider": provider.get_parent(), **chunk.get_dict()}
+                usage_dir = Path(get_cookies_dir()) / ".usage"
+                usage_file = usage_dir / f"{datetime.date.today()}.jsonl"
+                usage_dir.mkdir(parents=True, exist_ok=True)
+                with usage_file.open("a" if usage_file.exists() else "w") as f:
+                    f.write(f"{json.dumps(usage)}\n")
+            yield chunk
+        provider.live += 1
+    except:
+        provider.live -= 1
+        raise
+
     # Yield sources if available
     if sources:
         yield sources
@@ -269,16 +288,17 @@ def iter_run_tools(
     sources = None
     
     if web_search:
+        debug.log(f"Performing web search with value: {web_search}")
         try:
             messages = messages.copy()
             search_query = web_search if isinstance(web_search, str) and web_search != "true" else None
             # Note: Using asyncio.run inside sync function is not ideal, but maintaining original pattern
             messages[-1]["content"], sources = asyncio.run(do_search(messages[-1]["content"], search_query))
         except Exception as e:
-            debug.error(f"Couldn't do web search: {e.__class__.__name__}: {e}")
+            debug.error(f"Couldn't do web search:", e)
     
     # Get API key if needed
-    if provider is not None and not kwargs.get("api_key"):
+    if not kwargs.get("api_key"):
         api_key = AuthManager.load_api_key(provider)
         if api_key:
             kwargs["api_key"] = api_key
@@ -288,7 +308,7 @@ def iter_run_tools(
         for tool in tool_calls:
             if tool.get("type") == "function":
                 function_name = tool.get("function", {}).get("name")
-                
+                debug.log(f"Processing tool call: {function_name}")
                 if function_name == TOOL_NAMES["SEARCH"]:
                     tool["function"]["arguments"] = ToolHandler.validate_arguments(tool["function"])
                     messages[-1]["content"] = get_search_message(
@@ -322,24 +342,39 @@ def iter_run_tools(
     # Process response chunks
     thinking_start_time = 0
     processor = ThinkingProcessor()
-    
-    for chunk in provider.create_function(model=model, messages=messages, provider=provider, **kwargs):
-        if isinstance(chunk, FinishReason):
-            if sources is not None:
-                yield sources
+    model_info = model
+    try:
+        for chunk in provider.create_function(model=model, messages=messages, provider=provider, **kwargs):
+            if isinstance(chunk, FinishReason):
+                if sources is not None:
+                    yield sources
+                    sources = None
+                yield chunk
+                continue
+            elif isinstance(chunk, Sources):
                 sources = None
-            yield chunk
-            continue
-        elif isinstance(chunk, Sources):
-            sources = None
-        if not isinstance(chunk, str):
-            yield chunk
-            continue
+            elif isinstance(chunk, ProviderInfo):
+                model_info = getattr(chunk, 'model', model_info)
+            elif isinstance(chunk, Usage):
+                usage = {"user": kwargs.get("user"), "model": model_info, "provider": provider.get_parent(), **chunk.get_dict()}
+                usage_dir = Path(get_cookies_dir()) / ".usage"
+                usage_file = usage_dir / f"{datetime.date.today()}.jsonl"
+                usage_dir.mkdir(parents=True, exist_ok=True)
+                with usage_file.open("a" if usage_file.exists() else "w") as f:
+                    f.write(f"{json.dumps(usage)}\n")
+            if not isinstance(chunk, str):
+                yield chunk
+                continue
+                
+            thinking_start_time, results = processor.process_thinking_chunk(chunk, thinking_start_time)
             
-        thinking_start_time, results = processor.process_thinking_chunk(chunk, thinking_start_time)
-        
-        for result in results:
-            yield result
+            for result in results:
+                yield result
+
+        provider.live += 1
+    except:
+        provider.live -= 1
+        raise
 
     if sources is not None:
         yield sources

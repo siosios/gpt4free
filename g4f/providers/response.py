@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import base64
+import html
 from typing import Union, Dict, List, Optional
 from abc import abstractmethod
 from urllib.parse import quote, unquote
@@ -138,6 +139,11 @@ class JsonMixin:
             if not key.startswith("__")
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict) -> JsonMixin:
+        """Create an instance from a dictionary."""
+        return cls(**data)
+
     def reset(self) -> None:
         """Reset all attributes."""
         self.__dict__ = {}
@@ -169,12 +175,18 @@ class Usage(JsonMixin, HiddenResponse):
         self,
         promptTokens: int = None,
         completionTokens: int = None,
+        input_tokens: int = None,
+        output_tokens: int = None,
         **kwargs
     ):
         if promptTokens is not None:
             kwargs["prompt_tokens"] = promptTokens
         if completionTokens is not None:
             kwargs["completion_tokens"] = completionTokens
+        if input_tokens is not None:
+            kwargs["prompt_tokens"] = input_tokens
+        if output_tokens is not None:
+            kwargs["completion_tokens"] = output_tokens
         if "total_tokens" not in kwargs and "prompt_tokens" in kwargs and "completion_tokens" in kwargs:
             kwargs["total_tokens"] = kwargs["prompt_tokens"] + kwargs["completion_tokens"]
         return super().__init__(**kwargs)
@@ -267,28 +279,35 @@ class SourceLink(ResponseType):
         title = f"[{self.title}]"
         return f" {format_link(self.url, title)}"
 
-class YouTube(HiddenResponse):
-    def __init__(self, ids: List[str]) -> None:
+class YouTubeResponse(HiddenResponse):
+    def __init__(self, ids: List[str], add_links: bool = False) -> None:
         """Initialize with a list of YouTube IDs."""
         self.ids = ids
+        self.add_links = add_links
 
     def to_string(self) -> str:
         """Return YouTube embeds as a string."""
         if not self.ids:
             return ""
+        template = '<iframe type="text/html" src="https://www.youtube.com/embed/{id}"></iframe>'
+        if self.add_links:
+            template += '\n\n<a href="https://www.youtube.com/watch?v={id}">Watch on YouTube</a>'
         return "\n\n" + ("\n".join([
-            f'<iframe type="text/html" src="https://www.youtube.com/embed/{id}"></iframe>'
+            template.format(id=id)
             for id in self.ids
         ]))
 
 class AudioResponse(ResponseType):
-    def __init__(self, data: Union[bytes, str], **kwargs) -> None:
+    def __init__(self, data: str, transcript: str = None, **kwargs) -> None:
         """Initialize with audio data bytes."""
         self.data = data
+        self.transcript = transcript
         self.options = kwargs
 
     def to_uri(self) -> str:
         if isinstance(self.data, str):
+            if self.data.startswith("/media/"):
+                return quote(self.data, '/?&=')
             return self.data
         """Return audio data as a base64-encoded data URI."""
         data_base64 = base64.b64encode(self.data).decode()
@@ -296,7 +315,9 @@ class AudioResponse(ResponseType):
 
     def __str__(self) -> str:
         """Return audio as html element."""
-        return f'<audio controls src="{self.to_uri()}"></audio>'
+        if isinstance(self.data, str) and self.data.startswith("data:"):
+            return f'<audio controls></audio>' + (f"\n\n{self.transcript}" if self.transcript else "")
+        return f'<audio controls src="{self.to_uri()}"></audio>' + (f"\n\n{self.transcript}" if self.transcript else "")
 
 class BaseConversation(ResponseType):
     def __str__(self) -> str:
@@ -349,7 +370,16 @@ class MediaResponse(ResponseType):
 
 class ImageResponse(MediaResponse):
     def __str__(self) -> str:
+        return self.to_string()
+
+    def to_string(self) -> str:
         """Return images as markdown."""
+        if self.get("width") and self.get("height"):
+            return "\n".join([
+                f'<a href="{html.escape(url)}" data-width="{self.get("width")}" data-height="{self.get("height")}" data-source="{html.escape(self.get("source_url", ""))}">'
+                + f'<img src="{url.replace("/media/", "/thumbnail/")}" alt="{html.escape(" ".join(self.alt.split()))}"></a>'
+                for url in self.get_list()
+            ])
         return format_images_markdown(self.urls, self.alt, self.get("preview"))
 
 class VideoResponse(MediaResponse):
@@ -365,14 +395,8 @@ class VideoResponse(MediaResponse):
             return "\n".join(result)
         return "\n".join([f'<video src="{quote_url(video)}"></video>' for video in self.get_list()])
 
-class ImagePreview(ImageResponse):
-    def __str__(self) -> str:
-        """Return an empty string for preview."""
-        return ""
-
-    def to_string(self) -> str:
-        """Return images as markdown."""
-        return super().__str__()
+class ImagePreview(ImageResponse, HiddenResponse):
+    pass
 
 class PreviewResponse(HiddenResponse):
     def __init__(self, data: str) -> None:

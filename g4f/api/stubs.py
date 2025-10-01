@@ -22,6 +22,7 @@ class RequestConfig(BaseModel):
     proxy: Optional[str] = None
     conversation: Optional[dict] = None
     timeout: Optional[int] = None
+    stream_timeout: Optional[int] = None
     tool_calls: list = Field(default=[], examples=[[
 		{
 			"function": {
@@ -134,3 +135,4 @@ class AudioSpeechConfig(BaseModel):
     instrcutions: str = "Speech this text in a natural way."
     response_format: Optional[str] = None
     language: Optional[str] = None
+    download_media: bool = True

@@ -8,7 +8,6 @@ import random
 import string
 from pathlib import Path
 from typing import Optional
-from datetime import datetime, timedelta
 
 from ..typing import AsyncResult, Messages, MediaListType
 from ..requests.raise_for_status import raise_for_status
@@ -33,6 +32,7 @@ class Blackbox(AsyncGeneratorProvider, ProviderModelMixin):
     api_endpoint = "https://www.blackbox.ai/api/chat"
     
     working = True
+    active_by_default = True
     supports_stream = True
     supports_system_message = True
     supports_message_history = True
@@ -299,9 +299,10 @@ class Blackbox(AsyncGeneratorProvider, ProviderModelMixin):
                 async for chunk in response.content.iter_any():
                     if chunk:
                         chunk_text = chunk.decode()
-                        full_response.append(chunk_text)
-                        yield chunk_text
-                
+                        if chunk_text != "Login to continue using":
+                            full_response.append(chunk_text)
+                            yield chunk_text
+
                 full_response_text = ''.join(full_response)
                 
                 # Handle conversation history

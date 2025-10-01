@@ -7,6 +7,12 @@ from typing import Iterator
 from flask import send_from_directory, request
 from inspect import signature
 
+try:
+    from PIL import Image 
+    has_pillow = True
+except ImportError:
+    has_pillow = False
+
 from ...errors import VersionNotFoundError, MissingAuthError
 from ...image.copy_images import copy_media, ensure_media_dir, get_media_dir
 from ...image import get_width_height
@@ -16,8 +22,10 @@ from ...providers.base_provider import ProviderModelMixin
 from ...providers.retry_provider import BaseRetryProvider
 from ...providers.helper import format_media_prompt
 from ...providers.response import *
+from ...providers.any_model_map import model_map
+from ...providers.any_provider import AnyProvider
+from ...client.service import get_model_and_provider
 from ... import version, models
-from ... import ChatCompletion, get_model_and_provider
 from ... import debug
 
 logger = logging.getLogger(__name__)
@@ -41,11 +49,11 @@ class Api:
 
     @staticmethod
     def get_provider_models(provider: str, api_key: str = None, api_base: str = None, ignored: list = None):
-        def get_model_data(provider: ProviderModelMixin, model: str):
+        def get_model_data(provider: ProviderModelMixin, model: str, default: bool = False) -> dict:
             return {
                 "model": model,
                 "label": model.split(":")[-1] if provider.__name__ == "AnyProvider" and not model.startswith("openrouter:") else model,
-                "default": model == provider.default_model,
+                "default": default or model == provider.default_model,
                 "vision": model in provider.vision_models,
                 "audio": False if provider.audio_models is None else model in provider.audio_models,
                 "video": model in provider.video_models,
@@ -72,6 +80,9 @@ class Api:
                     get_model_data(provider, model)
                     for model in models
                 ]
+        elif provider in model_map:
+            return [get_model_data(AnyProvider, provider, True)]
+
         return []
 
     @staticmethod
@@ -94,10 +105,24 @@ class Api:
             "vision": getattr(provider, "default_vision_model", None) is not None,
             "nodriver": getattr(provider, "use_nodriver", False),
             "hf_space": getattr(provider, "hf_space", False),
-            "active_by_default": not provider.needs_auth if provider.active_by_default is None else provider.active_by_default,
+            "active_by_default": False if provider.active_by_default is None else provider.active_by_default,
             "auth": provider.needs_auth,
             "login_url": getattr(provider, "login_url", None),
+            "live": provider.live
         } for provider in Provider.__providers__ if provider.working and safe_get_models(provider)]
+
+    def get_all_models(self) -> dict[str, list]:
+        def safe_get_provider_models(provider: ProviderModelMixin) -> list[str]:
+            try:
+                return list(provider.get_models())
+            except Exception as e:
+                debug.error(f"{provider.__name__}: get_models error:", e)
+                return []
+        return {
+            provider.__name__: safe_get_provider_models(provider)
+            for provider in Provider.__providers__
+            if provider.working and hasattr(provider, "get_models")
+        }
 
     @staticmethod
     def get_version() -> dict:
@@ -125,10 +150,10 @@ class Api:
 
     def _prepare_conversation_kwargs(self, json_data: dict):
         kwargs = {**json_data}
-        model = json_data.get('model')
-        provider = json_data.get('provider')
-        messages = json_data.get('messages')
-        action = json_data.get('action')
+        model = kwargs.pop('model', None)
+        provider = kwargs.pop('provider', None)
+        messages = kwargs.pop('messages', None)
+        action = kwargs.get('action')
         if action == "continue":
             kwargs["tool_calls"].append({
                 "function": {
@@ -136,14 +161,13 @@ class Api:
                 },
                 "type": "function"
             })
-        conversation = json_data.get("conversation")
+        conversation = kwargs.pop("conversation", None)
         if isinstance(conversation, dict):
             kwargs["conversation"] = JsonConversation(**conversation)
         return {
             "model": model,
             "provider": provider,
             "messages": messages,
-            "stream": True,
             "ignore_stream": True,
             **kwargs
         }
@@ -156,12 +180,9 @@ class Api:
         if "user" not in kwargs:
             debug.log = decorated_log
         proxy = os.environ.get("G4F_PROXY")
-        provider = kwargs.pop("provider", None)
         try:
             model, provider_handler = get_model_and_provider(
-                kwargs.get("model"), provider,
-                stream=True,
-                ignore_stream=True,
+                kwargs.get("model"), provider or AnyProvider,
                 has_images="media" in kwargs,
             )
             if "user" in kwargs:
@@ -210,10 +231,22 @@ class Api:
                             proxy=proxy,
                             alt=chunk.alt,
                             tags=tags,
-                            add_url=f"width={width}&height={height}&",
+                            add_url=True,
                             timeout=kwargs.get("timeout"),
+                            return_target=True if isinstance(chunk, ImageResponse) else False,
                         ))
-                        media = ImageResponse(media, chunk.alt) if isinstance(chunk, ImageResponse) else VideoResponse(media, chunk.alt)
+                        options = {}
+                        target_paths, urls = get_target_paths_and_urls(media)
+                        if target_paths:
+                            if has_pillow:
+                                try:
+                                    with Image.open(target_paths[0]) as img:
+                                        width, height = img.size
+                                        options = {"width": width, "height": height}
+                                except Exception as e:
+                                    logger.exception(e)
+                            options["target_paths"] = target_paths
+                        media = ImageResponse(urls, chunk.alt, options) if isinstance(chunk, ImageResponse) else VideoResponse(media, chunk.alt)
                     yield self._format_json("content", str(media), urls=media.urls, alt=media.alt)
                 elif isinstance(chunk, SynthesizeData):
                     yield self._format_json("synthesize", chunk.get_dict())
@@ -229,10 +262,10 @@ class Api:
                     yield self._format_json("usage", chunk.get_dict())
                 elif isinstance(chunk, Reasoning):
                     yield self._format_json("reasoning", **chunk.get_dict())
-                elif isinstance(chunk, YouTube):
+                elif isinstance(chunk, YouTubeResponse):
                     yield self._format_json("content", chunk.to_string())
                 elif isinstance(chunk, AudioResponse):
-                    yield self._format_json("content", str(chunk))
+                    yield self._format_json("content", str(chunk), data=chunk.data)
                 elif isinstance(chunk, SuggestedFollowups):
                     yield self._format_json("suggestions", chunk.suggestions)
                 elif isinstance(chunk, DebugResponse):
@@ -287,3 +320,13 @@ class Api:
 
 def get_error_message(exception: Exception) -> str:
     return f"{type(exception).__name__}: {exception}"
+
+def get_target_paths_and_urls(media: list[Union[str, tuple[str, str]]]) -> tuple[list[str], list[str]]:
+    target_paths = []
+    urls = []
+    for item in media:
+        if isinstance(item, tuple):
+            item, target_path = item
+            target_paths.append(target_path)
+        urls.append(item)
+    return target_paths, urls

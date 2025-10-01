@@ -67,7 +67,7 @@ def iter_response(
     stop: Optional[list[str]] = None
 ) -> ChatCompletionResponseType:
     content = ""
-    reasoning_content = []
+    reasoning = []
     finish_reason = None
     tool_calls = None
     usage = None
@@ -97,7 +97,7 @@ def iter_response(
             provider = chunk
             continue
         elif isinstance(chunk, Reasoning):
-            reasoning_content.append(chunk)
+            reasoning.append(chunk)
         elif isinstance(chunk, HiddenResponse):
             continue
         elif isinstance(chunk, Exception):
@@ -143,9 +143,11 @@ def iter_response(
                 content = filter_json(content)
         chat_completion = ChatCompletion.model_construct(
             content, finish_reason, completion_id, int(time.time()), usage=usage,
-            **filter_none(tool_calls=[ToolCallModel.model_construct(**tool_call) for tool_call in tool_calls]) if tool_calls is not None else {},
+            **(filter_none(
+                tool_calls=[ToolCallModel.model_construct(**tool_call) for tool_call in tool_calls]
+            ) if tool_calls is not None else {}),
             conversation=None if conversation is None else conversation.get_dict(),
-            reasoning_content=reasoning_content if reasoning_content else None
+            reasoning=reasoning if reasoning else None
         )
     if provider is not None:
         chat_completion.provider = provider.name
@@ -172,7 +174,7 @@ async def async_iter_response(
     stop: Optional[list[str]] = None
 ) -> AsyncChatCompletionResponseType:
     content = ""
-    reasoning_content = []
+    reasoning = []
     finish_reason = None
     completion_id = ''.join(random.choices(string.ascii_letters + string.digits, k=28))
     idx = 0
@@ -200,7 +202,7 @@ async def async_iter_response(
                 provider = chunk
                 continue
             elif isinstance(chunk, Reasoning) and not stream:
-                reasoning_content.append(chunk)
+                reasoning.append(chunk)
             elif isinstance(chunk, HiddenResponse):
                 continue
             elif isinstance(chunk, Exception):
@@ -246,11 +248,11 @@ async def async_iter_response(
                     content = filter_json(content)
             chat_completion = ChatCompletion.model_construct(
                 content, finish_reason, completion_id, int(time.time()), usage=usage,
-                **filter_none(
+                **(filter_none(
                     tool_calls=[ToolCallModel.model_construct(**tool_call) for tool_call in tool_calls]
-                ) if tool_calls is not None else {},
+                ) if tool_calls else {}),
                 conversation=conversation,
-                reasoning_content=reasoning_content if reasoning_content else None
+                reasoning=reasoning if reasoning else None
             )
         if provider is not None:
             chat_completion.provider = provider.name
@@ -365,7 +367,7 @@ class Completions:
             messages = [{"role": "user", "content": messages}]
         resolve_media(kwargs, image, image_name)
         if hasattr(model, "name"):
-            model = model.name
+            model = model.get_long_name()
         if provider is None:
             provider = self.provider
             if provider is None:
@@ -507,7 +509,7 @@ class Images:
                 api_key=api_key,
                 **kwargs
             ):
-                if isinstance(item, (MediaResponse, AudioResponse)):
+                if isinstance(item, (MediaResponse, AudioResponse)) and not isinstance(item, HiddenResponse):
                     items.append(item)
         elif hasattr(provider_handler, "create_completion"):
             for item in provider_handler.create_completion(
@@ -518,7 +520,7 @@ class Images:
                 api_key=api_key,
                 **kwargs
             ):
-                if isinstance(item, (MediaResponse, AudioResponse)):
+                if isinstance(item, (MediaResponse, AudioResponse)) and not isinstance(item, HiddenResponse):
                     items.append(item)
         else:
             raise ValueError(f"Provider {provider_name} does not support image generation")
@@ -686,7 +688,7 @@ class AsyncCompletions:
             messages = [{"role": "user", "content": messages}]
         resolve_media(kwargs, image, image_name)
         if hasattr(model, "name"):
-            model = model.name
+            model = model.get_long_name()
         if provider is None:
             provider = self.provider
             if provider is None:
@@ -751,7 +753,7 @@ class AsyncImages(Images):
         **kwargs
     ) -> ImagesResponse:
         return await self.async_create_variation(
-           image, model, provider, response_format, **kwargs
+           image=image, model=model, provider=provider, response_format=response_format, **kwargs
         )
 
 class AsyncResponses():
@@ -781,7 +783,7 @@ class AsyncResponses():
                     input[idx] = {"role": message["role"], "content": message["content"]}
         resolve_media(kwargs)
         if hasattr(model, "name"):
-            model = model.name
+            model = model.get_long_name()
         if provider is None:
             provider = self.provider
             if provider is None:

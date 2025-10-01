@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 from ..providers.types          import BaseProvider, ProviderType
-from ..providers.retry_provider import RetryProvider, IterListProvider
+from ..providers.retry_provider import RetryProvider, IterListProvider, RotatedProvider
 from ..providers.base_provider  import AsyncProvider, AsyncGeneratorProvider
 from ..providers.create_images  import CreateImagesProvider
 from .. import debug
 
-from .needs_auth       import *
-from .needs_auth.hf    import HuggingFace, HuggingChat, HuggingFaceAPI, HuggingFaceInference, HuggingFaceMedia
+from .needs_auth import *
+from .needs_auth.hf import HuggingFace, HuggingChat, HuggingFaceAPI, HuggingFaceInference, HuggingFaceMedia
 try:
     from .needs_auth.mini_max import HailuoAI, MiniMax
 except ImportError as e:
     debug.error("MiniMax providers not loaded:", e)
 
-from .template         import OpenaiTemplate, BackendApi
-from .har              import HarProvider
+from .template import OpenaiTemplate, BackendApi
+from .qwen.QwenCode import QwenCode
 try:
     from .not_working import *
 except ImportError as e:
@@ -31,27 +31,34 @@ try:
     from .audio import *
 except ImportError as e:
     debug.error("Audio providers not loaded:", e)
+try:
+    from .search import *
+except ImportError as e:
+    debug.error("Search providers not loaded:", e)
 
-from .deprecated.ARTA      import ARTA
+from .deprecated.ARTA import ARTA
+from .deprecated.DuckDuckGo import DuckDuckGo
+
+from .ApiAirforce          import ApiAirforce
 from .Blackbox             import Blackbox
 from .Chatai               import Chatai
 from .Cloudflare           import Cloudflare
 from .Copilot              import Copilot
-from .DeepInfraChat        import DeepInfraChat
-from .DuckDuckGo           import DuckDuckGo
-from .Free2GPT             import Free2GPT
-from .FreeGpt              import FreeGpt
-from .ImageLabs            import ImageLabs
+from .DeepInfra            import DeepInfra
+from .EasyChat             import EasyChat
+from .GLM                  import GLM
+from .Kimi                 import Kimi
 from .LambdaChat           import LambdaChat
-from .LegacyLMArena        import LegacyLMArena
+from .Mintlify             import Mintlify
 from .OIVSCodeSer2         import OIVSCodeSer2
 from .OIVSCodeSer0501      import OIVSCodeSer0501
+from .OperaAria            import OperaAria
 from .PerplexityLabs       import PerplexityLabs
 from .PollinationsAI       import PollinationsAI
 from .PollinationsImage    import PollinationsImage
+from .Startnest            import Startnest
+from .Qwen                 import Qwen
 from .TeachAnything        import TeachAnything
-from .Together             import Together
-from .Websim               import Websim
 from .WeWordle             import WeWordle
 from .Yqcloud              import Yqcloud
 
