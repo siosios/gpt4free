@@ -49,7 +49,7 @@ class MissingRequirementsError(G4FError):
 
 
 class NestAsyncioError(MissingRequirementsError):
-    """Raised when 'nest_asyncio' is missing."""
+    """Raised when 'nest_asyncio2' is missing."""
     pass
 
 
@@ -100,4 +100,8 @@ class TimeoutError(G4FError):
 
 class ConversationLimitError(G4FError):
     """Raised when a conversation limit is reached on the provider."""
+    pass
+
+class ProviderException(G4FError):
+    """Raised for general provider-related exceptions."""
     pass

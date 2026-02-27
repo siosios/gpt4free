@@ -14,7 +14,7 @@ INSTALL_REQUIRE = [
     "aiohttp",
     "brotli",
     "pycryptodome",
-    "nest_asyncio",
+    "nest-asyncio2",
 ]
 
 EXTRA_REQUIRE = {
@@ -28,17 +28,20 @@ EXTRA_REQUIRE = {
         "aiohttp_socks",           # proxy
         "pillow",                  # image
         "cairosvg",                # svg image
-        "werkzeug", "flask",       # gui
+        "werkzeug",
+        "flask[async]",            # gui
         "fastapi",                 # api
         "uvicorn",                 # api
         "nodriver",
         "python-multipart",
         "a2wsgi",
-        "pywebview",
-        "plyer",
         "setuptools",
         "markitdown[all]",
-        "python-dotenv"
+        "python-dotenv",
+        "aiofile",
+        "cloudscraper",
+        "wasmtime",
+        "numpy"
     ],
     'slim': [
         "curl_cffi>=0.6.2",
@@ -48,13 +51,18 @@ EXTRA_REQUIRE = {
         "beautifulsoup4", # web_search and bing.create_images
         "aiohttp_socks",           # proxy
         "pillow",                  # image
-        "werkzeug", "flask",       # gui
+        "werkzeug",
+        "flask[async]",            # gui
         "fastapi",                 # api
         "uvicorn",                 # api
+        "nodriver",
         "python-multipart",
         "a2wsgi",
-        "markitdown[all]",
-        "python-dotenv"
+        "pypdf2",
+        "python-docx",
+        "python-dotenv",
+        "aiofile",
+        "cloudscraper"
     ],
     "image": [
         "pillow",
@@ -71,11 +79,11 @@ EXTRA_REQUIRE = {
         "loguru", "fastapi",
         "uvicorn",
         "python-multipart",
+        "a2wsgi",
     ],
     "gui": [
-        "werkzeug", "flask",
+        "werkzeug", "flask[async]",
         "beautifulsoup4", "pillow",
-        "ddgs",
     ],
     "search": [
         "beautifulsoup4",
@@ -112,7 +120,10 @@ setup(
     install_requires=INSTALL_REQUIRE,
     extras_require=EXTRA_REQUIRE,
     entry_points={
-        'console_scripts': ['g4f=g4f.cli:main'],
+        'console_scripts': [
+            'g4f=g4f.cli:main',
+            'g4f-mcp=g4f.mcp.server:main',
+        ],
     },
     url='https://github.com/xtekky/gpt4free',  # Link to your GitHub repository
     project_urls={

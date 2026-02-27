@@ -430,9 +430,8 @@ jobs:
         with:
           tag_name: ${{ needs.prepare.outputs.version }}
           name: Release ${{ needs.prepare.outputs.version }}
+          append_body: true
           body: |
-            ## g4f ${{ needs.prepare.outputs.version }}
-
             ### Download Options
 
             **Python Package:**
@@ -446,11 +445,15 @@ jobs:
             - macOS ARM64: `g4f-macos-${{ needs.prepare.outputs.version }}-arm64`
 
             **System Packages:**
-            - WinGet: `winget install g4f` (after manifest approval)
+            - WinGet: `winget install gpt4free`
 
             **Docker:**
             - `docker pull hlohaus789/g4f:${{ needs.prepare.outputs.version }}`
             - `docker pull hlohaus789/g4f:${{ needs.prepare.outputs.version }}-slim`
+
+            💻 **Having trouble with the .exe from this release?**  
+            👉 Check out the Windows launcher for GPT4Free instead:  
+            🔗 [https://github.com/gpt4free/g4f.exe](https://github.com/gpt4free/g4f.exe) 🚀  
           draft: false
           prerelease: false
           files: |
