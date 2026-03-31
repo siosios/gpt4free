@@ -81,7 +81,8 @@ COOKIE_DOMAINS = (
     "github.com",
     "yupp.ai",
     "chat.deepseek.com",
-    ".perplexity.ai"
+    ".perplexity.ai",
+    "ollama.com"
 )
 
 if has_browser_cookie3 and os.environ.get("DBUS_SESSION_BUS_ADDRESS", "/dev/null") == "/dev/null":
@@ -94,14 +95,16 @@ def get_headers(domain_name: str) -> Dict[str, str]:
 
 
 def get_cookies(domain_name: str, raise_requirements_error: bool = True,
-                single_browser: bool = False, cache_result: bool = True) -> Dict[str, str]:
+                single_browser: Optional[str] = None, cache_result: bool = True) -> Dict[str, str]:
     """Load cookies for a given domain from all supported browsers."""
-    if domain_name in CookiesConfig.cookies:
+    if single_browser != "all" and domain_name in CookiesConfig.cookies:
         return CookiesConfig.cookies[domain_name]
 
     cookies = load_cookies_from_browsers(domain_name, raise_requirements_error, single_browser)
-    if cache_result:
-        CookiesConfig.cookies[domain_name] = cookies
+    if single_browser != "all" and cache_result:
+        if len(cookies) > 0:
+            CookiesConfig.cookies[domain_name] = cookies
+        return CookiesConfig.cookies.get(domain_name, {})
     return cookies
 
 
@@ -115,7 +118,7 @@ def set_cookies(domain_name: str, cookies: Cookies = None) -> None:
 
 def load_cookies_from_browsers(domain_name: str,
                                raise_requirements_error: bool = True,
-                               single_browser: bool = False) -> Cookies:
+                               single_browser: Optional[str] = None) -> Cookies:
     """Helper to load cookies from all supported browsers."""
     if not has_browser_cookie3:
         if raise_requirements_error:
@@ -123,15 +126,21 @@ def load_cookies_from_browsers(domain_name: str,
         return {}
 
     cookies = {}
+    all_cookies = {}
     for cookie_fn in BROWSERS:
+        if domain_name in CookiesConfig.cookies:
+            all_cookies[cookie_fn.__name__] = {"config": CookiesConfig.cookies.get(domain_name, {})}
+        else:
+            all_cookies[cookie_fn.__name__] = {}
         try:
             cookie_jar = cookie_fn(domain_name=domain_name)
-            if cookie_jar:
-                debug.log(f"Read cookies from {cookie_fn.__name__} for {domain_name}")
             for cookie in cookie_jar:
                 if cookie.name not in cookies and (not cookie.expires or cookie.expires > time.time()):
                     cookies[cookie.name] = cookie.value
-            if single_browser and cookie_jar:
+                    all_cookies[cookie_fn.__name__][cookie.name] = cookie.value
+            if len(all_cookies[cookie_fn.__name__]) > 0:
+                debug.log(f"Total cookies loaded for {domain_name} from {cookie_fn.__name__}: {len(all_cookies[cookie_fn.__name__])}")
+            if single_browser is True and cookie_jar:
                 break
         except BrowserCookieError:
             pass
@@ -139,7 +148,9 @@ def load_cookies_from_browsers(domain_name: str,
             debug.error("Cookie loading interrupted by user.")
             break
         except Exception as e:
-            debug.error(f"Error reading cookies from {cookie_fn.__name__} for {domain_name}: {e}")
+            debug.error(f"Error reading cookies from {cookie_fn.__name__} for {domain_name}: {type(e).__name__}: {e}")
+    if single_browser == "all":
+        return all_cookies
     return cookies
 
 
@@ -252,3 +263,12 @@ def read_cookie_files(dir_path: Optional[str] = None, domains_filter: Optional[L
             if not domains_filter or domain in domains_filter:
                 CookiesConfig.cookies[domain] = cookies
                 debug.log(f"Cookies added: {len(cookies)} from {domain}")
+
+    # Load custom model routing config (config.yaml)
+    try:
+        from .providers.config_provider import RouterConfig
+        config_path = os.path.join(dir_path, "config.yaml")
+        RouterConfig.load(config_path)
+    except Exception as e:
+        config_path = os.path.join(dir_path, "config.yaml")
+        debug.error(f"config.yaml: Failed to load routing config from {config_path}:", e)

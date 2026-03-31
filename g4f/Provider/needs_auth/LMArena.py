@@ -161,48 +161,24 @@ class LMArena(AsyncGeneratorProvider, ProviderModelMixin, AuthFileMixin):
         return cls.models
 
     @classmethod
-    async def get_args_from_nodriver(cls, proxy, force=True):
+    async def get_args_from_nodriver(cls, proxy):
         cache_file = cls.get_cache_file()
         grecaptcha = []
 
-
-        async def is_auth(page:nodriver.Tab):
-            cookies = {c.name: c.value for c in await page.send(nodriver.cdp.network.get_cookies([cls.url]))}
-            return any("arena-auth-prod" in cookie for cookie in cookies)
-
-        async def clear_cookies_for_url(browser: nodriver.Browser, url: str):
-            debug.log(f"Clearing cookies for {url}")
-            host = urlparse(url).hostname
-            if not host:
-                raise ValueError(f"Bad url: {url}")
-
-            tab = browser.main_tab  # any open tab is fine
-            cookies = await browser.cookies.get_all()  # returns CDP cookies :contentReference[oaicite:2]{index=2}
-            for c in cookies:
-                dom = (c.domain or "").lstrip(".")
-                if dom and (host == dom or host.endswith("." + dom)):
-                    if c.name == "cf_clearance":
-                        continue
-                    await tab.send(
-                        cdp.network.delete_cookies(
-                            name=c.name,
-                            domain=dom,  # exact domain :contentReference[oaicite:3]{index=3}
-                            path=c.path,  # exact path :contentReference[oaicite:4]{index=4}
-                            # partition_key=c.partition_key,  # if you use partitioned cookies
-                        )
-                    )
-
         async def callback(page: nodriver.Tab):
-            if force:
-                await clear_cookies_for_url(page.browser, cls.url)
-                await page.reload()
-            button = await page.find("Accept Cookies")
+            try:
+                button = await page.find("Accept Cookies")
+            except TimeoutError:
+                button = None
             if button:
                 await button.click()
             else:
                 debug.log("No 'Accept Cookies' button found, skipping.")
             await asyncio.sleep(1)
-            textarea = await page.select('textarea[name="message"]')
+            try:
+                textarea = await page.select('textarea[name="message"]')
+            except TimeoutError:
+                textarea = None
             if textarea:
                 await textarea.send_keys("Hello")
             # await asyncio.sleep(1)
@@ -221,12 +197,12 @@ class LMArena(AsyncGeneratorProvider, ProviderModelMixin, AuthFileMixin):
                 element = None
             if element:
                 await click_trunstile(page, 'document.querySelector(\'[style="display: grid;"]\')')
-            if not await page.evaluate('document.cookie.indexOf("arena-auth-prod-v1") >= 0'):
-                debug.log("No authentication cookie found, trying to authenticate.")
-                await page.select('#cf-turnstile', 300)
-                debug.log("Found Element: 'cf-turnstile'")
+            while not await page.evaluate('document.cookie.indexOf("arena-auth-prod-v1") >= 0'):
+                debug.log("No authentication cookie found, waiting for authenticate.")
+                #await page.select('#cf-turnstile', 300)
+                #debug.log("Found Element: 'cf-turnstile'")
                 await asyncio.sleep(3)
-                await click_trunstile(page)
+                #await click_trunstile(page)
             while not await page.evaluate('document.cookie.indexOf("arena-auth-prod-v1") >= 0'):
                 await asyncio.sleep(1)
             while not await page.evaluate('!!document.querySelector(\'textarea\')'):
@@ -277,8 +253,8 @@ class LMArena(AsyncGeneratorProvider, ProviderModelMixin, AuthFileMixin):
             await cls.__load_actions(html)
 
         args = await get_args_from_nodriver(
-            cls.url, proxy=proxy, callback=callback, cookies=args.get("cookies", {}), user_data_dir="grecaptcha",
-            browser_args=["--guest", "--disable-gpu", "--no-sandbox"])
+            cls.url, proxy=proxy, callback=callback
+        )
 
         with cache_file.open("w") as f:
             json.dump(args, f)

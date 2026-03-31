@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import flask
 import os
+import re
 import time
 import base64
 import logging
@@ -43,16 +44,19 @@ from ...client.helper import filter_markdown
 from ...tools.files import supports_filename, get_streaming, get_bucket_dir, get_tempfile
 from ...tools.run_tools import iter_run_tools
 from ...errors import ModelNotFoundError, ProviderNotFoundError, MissingAuthError, RateLimitError
-from ...image import is_allowed_extension, process_image, MEDIA_TYPE_MAP
+from ...image import is_allowed_extension, process_image, MEDIA_TYPE_MAP, is_safe_url as _is_safe_url
 from ...cookies import get_cookies_dir
 from ...image.copy_images import secure_filename, get_source_url, get_media_dir, copy_media
 from ...client.service import get_model_and_provider
 from ...providers.any_model_map import model_map
 from ... import Provider
 from ... import models
+from ...Provider import ProviderUtils
 from .api import Api
 
 logger = logging.getLogger(__name__)
+
+_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 def safe_iter_generator(generator: Generator) -> Generator:
     start = next(generator)
@@ -149,20 +153,61 @@ class Backend_Api(Api):
             response = self.get_providers(**kwargs)
             return jsonify(response)
 
-        def get_demo_models():
-            return [{
-                "name": model.name,
-                "image": isinstance(model, models.ImageModel),
-                "vision": isinstance(model, models.VisionModel),
-                "audio": isinstance(model, models.AudioModel),
-                "video": isinstance(model, models.VideoModel),
-                "providers": [
-                    provider.get_parent()
-                    for provider in providers
-                ],
-                "demo": True
-            }
-            for model, providers in models.demo_models.values()]
+        @app.route('/backend-api/v2/oauth/<provider>', methods=['GET', 'POST'])
+        def oauth_login(provider: str):
+            timeout = 300.0
+            if request.method == 'GET':
+                timeout = float(request.args.get('timeout') or timeout)
+            else:
+                try:
+                    data = request.get_json(silent=True) or {}
+                    timeout = float(data.get('timeout') or timeout)
+                except Exception:
+                    pass
+
+            # Resolve provider class
+            try:
+                provider_class = ProviderUtils.get_by_label(provider)
+            except ValueError as e:
+                return jsonify({"error": {"message": str(e)}}), 404
+
+            if request.method == 'GET':
+                data = request.args.to_dict() or {}
+            else:
+                data = request.get_json(silent=True) or {}
+
+            action = data.get("action", "start")
+
+            # Github Copilot device flow: start/poll actions
+            if hasattr(provider_class, "oauth_start") and action == "start":
+                try:
+                    result = asyncio.run(provider_class.oauth_start())
+                    return jsonify(result), 200
+                except Exception as e:
+                    logger.exception(e)
+                    return jsonify({"error": {"message": str(e)}}), 500
+
+            if hasattr(provider_class, "oauth_poll") and action == "poll":
+                device_code = data.get("device_code")
+                if not device_code:
+                    return jsonify({"error": {"message": "device_code is required for poll action"}}), 400
+                try:
+                    result = asyncio.run(provider_class.oauth_poll(device_code))
+                    return jsonify(result), 200
+                except Exception as e:
+                    logger.exception(e)
+                    return jsonify({"error": {"message": str(e)}}), 500
+
+            # Fallback: provider.login (blocking) for interactive login flows
+            if hasattr(provider_class, "login"):
+                try:
+                    asyncio.run(provider_class.login())
+                    return jsonify({"status": "success"}), 200
+                except Exception as e:
+                    logger.exception(e)
+                    return jsonify({"error": {"message": str(e)}}), 500
+
+            return jsonify({"error": {"message": f"Provider {provider} does not support OAuth login"}}), 404
 
         def handle_conversation():
             """
@@ -180,6 +225,9 @@ class Backend_Api(Api):
             except json.JSONDecodeError as e:
                 logger.exception(e)
                 return jsonify({"error": {"message": "Invalid JSON data"}}), 400
+            for key in ["base_url", "proxy", "media"]:
+                if key in json_data:
+                    del json_data[key]  # Remove unsupported fields for security
             if app.demo and has_crypto:
                 secret = request.headers.get("x-secret", request.headers.get("x_secret"))
                 if not secret or not validate_secret(secret):
@@ -194,6 +242,8 @@ class Backend_Api(Api):
                         media.append((Path(newfile), file.filename))
             if "media_url" in request.form:
                 for url in request.form.getlist("media_url"):
+                    if not _is_safe_url(url):
+                        return jsonify({"error": {"message": f"Invalid or disallowed media_url: {url}"}}), 400
                     media.append((url, None))
             if media:
                 json_data['media'] = media
@@ -246,6 +296,12 @@ class Backend_Api(Api):
     
         @app.route('/backend-api/v2/usage/<date>', methods=['GET'])
         def get_usage(date: str):
+            if not _DATE_RE.match(date):
+                return (jsonify({"error": {"message": "Invalid date format"}}), 400)
+            try:
+                datetime.date.fromisoformat(date)
+            except ValueError:
+                return (jsonify({"error": {"message": "Invalid date"}}), 400)
             cache_dir = Path(get_cookies_dir()) / ".usage"
             cache_file = cache_dir / f"{date}.jsonl"
             if cache_file.exists():
@@ -584,10 +640,10 @@ class Backend_Api(Api):
         def upload_chat(share_id: str) -> dict:
             chat_data = {**request.json}
             updated = chat_data.get("updated", 0)
+            share_id = secure_filename(share_id)
             cache_value = self.chat_cache.get(share_id, 0)
             if updated == cache_value:
                 return {"share_id": share_id}
-            share_id = secure_filename(share_id)
             bucket_dir = get_bucket_dir(share_id)
             os.makedirs(bucket_dir, exist_ok=True)
             with open(os.path.join(bucket_dir, "chat.json"), 'w', encoding="utf-8") as f:
@@ -616,9 +672,8 @@ class Backend_Api(Api):
 
     def get_provider_models(self, provider: str):
         api_key = request.headers.get("x-api-key")
-        base_url = request.headers.get("x-api-base")
         ignored = request.headers.get("x-ignored", "").split()
-        return super().get_provider_models(provider, api_key, base_url, ignored)
+        return super().get_provider_models(provider, api_key, ignored)
 
     def _format_json(self, response_type: str, content = None, **kwargs) -> str:
         """
